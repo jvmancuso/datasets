@@ -48,8 +48,8 @@ introduced in the ICLR 2019 GANSynth paper (https://arxiv.org/abs/1902.08710).
 
 _F0_AND_LOUDNESS_ADDENDUM = """\
 This version additionally contains estimates for F0 using CREPE
-(Kim et al., 2018) and A-weighted perceptual loudness. Both signals are provided
-at a frame rate of 250Hz.
+(Kim et al., 2018) and A-weighted perceptual loudness in decibels. Both signals 
+are provided at a frame rate of 250Hz.
 """
 
 # From http://proceedings.mlr.press/v70/engel17a.html
@@ -75,6 +75,7 @@ _NUM_SECS = 4
 _AUDIO_RATE = 16000  # 16 kHz
 _F0_AND_LOUDNESS_RATE = 250  # 250 Hz
 _CREPE_FRAME_SIZE = 1024
+_LD_RANGE = 200.0
 
 _INSTRUMENT_FAMILIES = [
     "bass", "brass", "flute", "guitar", "keyboard", "mallet", "organ", "reed",
@@ -289,12 +290,13 @@ class Nsynth(tfds.core.BeamBasedBuilder):
       n_padding = (n_samples_padded - n_samples)
       assert n_padding % 1 == 0
       audio = np.pad(audio, (0, int(n_padding)), mode="constant")
+      crepe_step_size = 1000 / _F0_AND_LOUDNESS_RATE  # milliseconds
 
       _, f0_hz, f0_confidence, _ = tfds.core.lazy_imports.crepe.predict(
           audio,
           sr=_AUDIO_RATE,
           viterbi=True,
-          step_size=1000/_F0_AND_LOUDNESS_RATE,
+          step_size=crepe_step_size,
           center=False,
           verbose=0)
       f0_midi = tfds.core.lazy_imports.librosa.core.hz_to_midi(f0_hz)
@@ -310,26 +312,32 @@ class Nsynth(tfds.core.BeamBasedBuilder):
       }
       return id_, ex
 
-    def _calc_loudness(audio, n_fft=2048, top_db=200.0, pmin=1e-20):
+    def _calc_loudness(audio, n_fft=2048):
       """Perceptual loudness in tf, following librosa implementation."""
       librosa = tfds.core.lazy_imports.librosa
-      log10 = lambda x: tf.math.log(x) / tf.math.log(10.0)
 
+      # Get magnitudes.
+      frame_step = int(_AUDIO_RATE // _F0_AND_LOUDNESS_RATE)
       spectra = tf.signal.stft(
           signals=audio,
           frame_length=n_fft,
-          frame_step=int(_AUDIO_RATE // _F0_AND_LOUDNESS_RATE),
+          frame_step=frame_step,
           fft_length=n_fft,
           pad_end=True)
+      amplitude = tf.abs(spectra)
 
-      power = tf.abs(spectra)**2.0
-      power_db = 10.0 * log10(tf.maximum(pmin, power))
-      power_db = tf.maximum(power_db, tf.reduce_max(power_db) - top_db)
+      # Convert to power (db).
+      log10 = lambda x: tf.log(x) / tf.log(10.0)
+      amin = 1e-20  # Avoid log(0) instabilities.
+      power_db = 20.0 * log10(tf.maximum(amin, amplitude))
 
-      fft_frequencies = librosa.fft_frequencies(n_fft=n_fft)
+      # Perceptual weighting.
+      fft_frequencies = librosa.fft_frequencies(sr=_AUDIO_RATE, n_fft=n_fft)
       a_weighting = librosa.A_weighting(fft_frequencies)
+      loudness = power_db + a_weighting[tf.newaxis, tf.newaxis, :]
 
-      loudness = power_db + a_weighting[tf.newaxis, :]
+      # Set dynamic range, and average over frequency bins.
+      loudness = tf.maximum(loudness, -_LD_RANGE)
       loudness = tf.reduce_mean(loudness, axis=-1)
       return loudness
 
