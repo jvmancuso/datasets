@@ -63,6 +63,9 @@ FORBIDDEN_OS_FUNCTIONS = (
     "unlink",
     "walk",
 )
+FORBIDDEN_OS_PATH_FUNCTIONS = (
+    "exists",
+)
 
 
 _ORGINAL_NP_LOAD = np.load
@@ -168,7 +171,10 @@ class DatasetBuilderTestCase(parameterized.TestCase, test_utils.SubTestCase):
   def _mock_out_forbidden_os_functions(self):
     """Raises error if forbidden os functions are called instead of gfile."""
     err = AssertionError("Do not use `os`, but `tf.io.gfile` module instead.")
-    mock_os = absltest.mock.Mock(os, path=os.path)
+    mock_os_path = absltest.mock.Mock(os.path, wraps=os.path)
+    for fop in FORBIDDEN_OS_PATH_FUNCTIONS:
+      getattr(mock_os_path, fop).side_effect = err
+    mock_os = absltest.mock.Mock(os, path=mock_os_path)
     for fop in FORBIDDEN_OS_FUNCTIONS:
       getattr(mock_os, fop).side_effect = err
     os_patcher = absltest.mock.patch(
